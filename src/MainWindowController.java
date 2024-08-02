@@ -21,6 +21,8 @@ import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.UIManager;
 import javax.swing.WindowConstants;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.event.TableModelEvent;
 import javax.swing.event.TableModelListener;
 import javax.swing.table.TableModel;
@@ -42,6 +44,8 @@ import static javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_ALWAYS;
 import static javax.swing.ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS;
 
 public class MainWindowController {
+
+    public static final String GENERATED_JSON_FIELD_KEY = "#";
 
     public static void main(String[] args) throws Exception {
 
@@ -108,7 +112,24 @@ public class MainWindowController {
                             }
                         }
                     } else if (element instanceof JsonObject) {
-                        parsed.add(((JsonObject)element).asMap());
+                        // if all fields are non-scalar objects, then represent it as keyed table, otherwise as single-row table
+                        Map<String, JsonElement> fields = ((JsonObject)element).asMap();
+                        boolean hasPrimitiveFields = false;
+                        for (JsonElement val : fields.values()) {
+                            if (val.isJsonPrimitive() || val.isJsonNull()) {
+                                hasPrimitiveFields = true;
+                                break;
+                            }
+                        }
+                        if (hasPrimitiveFields) {
+                            parsed.add(((JsonObject)element).asMap());
+                        } else {
+                            for (Map.Entry<String, JsonElement> field : fields.entrySet()) {
+                                JsonObject value = (JsonObject) field.getValue();
+                                value.addProperty(GENERATED_JSON_FIELD_KEY, field.getKey());
+                                parsed.add(value.asMap());
+                            }
+                        }
                     } else {
                         statusText.setText("Neither JSON Object nor JSON array");
                     }
@@ -136,6 +157,30 @@ public class MainWindowController {
                     }
                 }
             }));
+            JButton unescapeButton = new JButton(new AbstractAction("Unescape") {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    jsonText.setText(unescapeQuotes(jsonText.getText()));
+                }
+            });
+            commandBar.add(unescapeButton);
+            jsonText.getDocument().addDocumentListener(new DocumentListener() {
+                @Override
+                public void insertUpdate(DocumentEvent e) {
+                    unescapeButton.setEnabled(areAllQuotesEscaped(jsonText.getText()));
+                }
+
+                @Override
+                public void removeUpdate(DocumentEvent e) {
+                    unescapeButton.setEnabled(areAllQuotesEscaped(jsonText.getText()));
+                }
+
+                @Override
+                public void changedUpdate(DocumentEvent e) {
+                    unescapeButton.setEnabled(areAllQuotesEscaped(jsonText.getText()));
+                }
+            });
+
 
             {
                 if (currentFontSize == null) {
@@ -168,18 +213,65 @@ public class MainWindowController {
             tabbedPane.addTab("JSON text", jsonTextPanel);
         }
 
+        {
+            JComponent tableContainer = new JPanel(new BorderLayout());
 
-        JComponent table = new JTable(tableModel);
-        JScrollPane jsonTableScrollPane = new JScrollPane(table);
-        jsonTableScrollPane.setHorizontalScrollBarPolicy(HORIZONTAL_SCROLLBAR_ALWAYS);
-        jsonTableScrollPane.setVerticalScrollBarPolicy(VERTICAL_SCROLLBAR_ALWAYS);
-        tabbedPane.addTab("Table", jsonTableScrollPane);
+            JComponent tableStatusBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 2));
+            tableContainer.add(tableStatusBar, BorderLayout.SOUTH);
+            JLabel tableStatusText = new JLabel(" ");
+            tableStatusBar.add(tableStatusText);
+
+
+            JTable table = new JTable(tableModel);
+            JScrollPane jsonTableScrollPane = new JScrollPane(table);
+            jsonTableScrollPane.setHorizontalScrollBarPolicy(HORIZONTAL_SCROLLBAR_ALWAYS);
+            jsonTableScrollPane.setVerticalScrollBarPolicy(VERTICAL_SCROLLBAR_ALWAYS);
+
+            tableContainer.add(jsonTableScrollPane, BorderLayout.CENTER);
+
+            tableModel.addTableModelListener(new TableModelListener() {
+                @Override
+                public void tableChanged(TableModelEvent e) {
+                    tableStatusText.setText("Rows: " + tableModel.getRowCount());
+                }
+            });
+
+            tabbedPane.addTab("Table", tableContainer);
+        }
 
         frame.getContentPane().add(tabbedPane, BorderLayout.CENTER);
 
         frame.setSize(400, 300);
         frame.show();
     }
+
+    public static boolean areAllQuotesEscaped(String str) {
+        int qi = 0;
+        boolean quotesFound = false;
+        boolean quotesEscaped = true;
+        while (true) {
+            qi = str.indexOf('\"', qi);
+            if (qi < 0) break;
+            quotesFound = true;
+            if (qi == 0 )  {
+                quotesEscaped = false;
+                break;
+            } else if (str.charAt(qi - 1) != '\\') {
+                quotesEscaped = false;
+                break;
+            }
+            qi += 1;
+            if (qi == str.length()) {
+                break;
+            }
+        }
+        return quotesFound && quotesEscaped;
+    }
+
+    public static String unescapeQuotes(String str) {
+        return str.replaceAll("\\\\\"", "\"");
+    }
+
 
     private static class MappedTableModel implements TableModel {
         private List<String> keys = new ArrayList<>();
@@ -249,7 +341,8 @@ public class MainWindowController {
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            return items.get(rowIndex).get(keys.get(columnIndex)).toString();
+            JsonElement obj = items.get(rowIndex).get(keys.get(columnIndex));
+            return obj == null ? "" : String.valueOf(obj);
         }
 
         @Override
